@@ -1,0 +1,421 @@
+{
+  "name": "Gold & Silver Price Tracker - Updated (Every 8 Hours + Retry Logic)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 8
+            }
+          ]
+        }
+      },
+      "name": "Schedule - Every 8 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [250, 300],
+      "notes": "يجلب البيانات 3 مرات يومياً: 00:00، 08:00، 16:00",
+      "id": "schedule-trigger"
+    },
+    {
+      "parameters": {
+        "url": "https://www.goldapi.io/api/XAU/EGP",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "Fetch Gold Price (Global)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 250],
+      "id": "fetch-gold-global",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "https://www.goldapi.io/api/XAG/EGP",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "name": "Fetch Silver Price (Global)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [450, 400],
+      "id": "fetch-silver-global",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// معالجة الأخطاء وتسجيل الفشل\nconst items = $input.all();\nconst results = [];\nconst errors = [];\n\nfor (const item of items) {\n  if (item.error) {\n    // فشل الطلب - سجل الخطأ\n    errors.push({\n      source: item.json.source || 'unknown',\n      error: item.error.message,\n      time: new Date().toISOString()\n    });\n  } else {\n    results.push(item.json);\n  }\n}\n\n// إذا فشلت جميع الطلبات، سجل في قاعدة البيانات\nif (results.length === 0) {\n  return [{\n    json: {\n      status: 'all_failed',\n      errors: errors,\n      retry_needed: true,\n      next_retry: new Date(Date.now() + 3600000).toISOString() // إعادة بعد ساعة\n    }\n  }];\n}\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "name": "Check Fetch Status",
+      "type": "n8n-nodes-base.code",
+      "position": [650, 300],
+      "id": "check-status"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "equals",
+              "value2": "all_failed"
+            }
+          ]
+        }
+      },
+      "name": "If All Failed",
+      "type": "n8n-nodes-base.if",
+      "position": [850, 300],
+      "id": "if-failed"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "data_fetch_log",
+        "columns": "fetch_time,status,source,error_message,retry_count,next_retry_time",
+        "options": {}
+      },
+      "name": "Log Failure to DB",
+      "type": "n8n-nodes-base.supabase",
+      "position": [1050, 200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "1",
+          "name": "Supabase Account"
+        }
+      },
+      "id": "log-failure"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.telegram_chat_id}}",
+        "text": "⚠️ *تنبيه: فشل جلب البيانات*\\n\\nفشل جلب أسعار الذهب والفضة في الموعد المحدد.\\n\\nسيتم إعادة المحاولة خلال ساعة واحدة.\\n\\n⏰ الوقت: {{$json.time}}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "Send Failure Alert",
+      "type": "n8n-nodes-base.telegram",
+      "position": [1050, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "2",
+          "name": "Telegram Bot"
+        }
+      },
+      "id": "telegram-failure"
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "hours"
+      },
+      "name": "Wait 1 Hour",
+      "type": "n8n-nodes-base.wait",
+      "position": [1250, 300],
+      "id": "wait-retry"
+    },
+    {
+      "parameters": {
+        "jsCode": "// تحويل التاريخ الميلادي إلى هجري\nconst HijriDate = require('hijri-converter');\n\nfor (const item of $input.all()) {\n  const now = new Date();\n  const gregorian = {\n    year: now.getFullYear(),\n    month: now.getMonth() + 1,\n    day: now.getDate()\n  };\n  \n  const hijri = HijriDate.toHijri(gregorian.year, gregorian.month, gregorian.day);\n  \n  item.json.date_hijri = `${hijri.hy}-${String(hijri.hm).padStart(2, '0')}-${String(hijri.hd).padStart(2, '0')}`;\n  item.json.date_gregorian = now.toISOString();\n  \n  // حساب السعر المحلي (إضافة هامش 8% للسعر العالمي)\n  if (item.json.metal === 'gold') {\n    item.json.price_local_egp = Math.round(item.json.price_gram_24k * 1.08);\n  } else if (item.json.metal === 'silver') {\n    item.json.price_local_egp = Math.round(item.json.price * 1.08);\n  }\n}\n\nreturn $input.all();"
+      },
+      "name": "Convert to Hijri & Calculate",
+      "type": "n8n-nodes-base.code",
+      "position": [1050, 400],
+      "id": "convert-hijri"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "prices",
+        "columns": "metal,price_egp,price_usd,source,date_gregorian,date_hijri",
+        "options": {}
+      },
+      "name": "Save to Supabase",
+      "type": "n8n-nodes-base.supabase",
+      "position": [1250, 400],
+      "credentials": {
+        "supabaseApi": {
+          "id": "1",
+          "name": "Supabase Account"
+        }
+      },
+      "id": "save-to-db"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "data_fetch_log",
+        "columns": "fetch_time,status,source",
+        "options": {}
+      },
+      "name": "Log Success to DB",
+      "type": "n8n-nodes-base.supabase",
+      "position": [1450, 400],
+      "credentials": {
+        "supabaseApi": {
+          "id": "1",
+          "name": "Supabase Account"
+        }
+      },
+      "id": "log-success"
+    },
+    {
+      "parameters": {
+        "jsCode": "// تحليل التغيرات السريعة (آخر 4 ساعات)\nconst items = $input.all();\nconst alerts = [];\n\nfor (const item of items) {\n  const currentPrice = item.json.price_egp;\n  \n  // في التطبيق الفعلي، نجلب السعر قبل 4 ساعات من قاعدة البيانات\n  const previousPrice = item.json.previous_price || currentPrice * 0.98;\n  \n  const changePercent = ((currentPrice - previousPrice) / previousPrice) * 100;\n  \n  // إذا كان التغير أكثر من 2% خلال 8 ساعات (بين جلبتين)\n  if (Math.abs(changePercent) > 2) {\n    alerts.push({\n      type: 'rapid_change',\n      metal: item.json.metal,\n      message: `تغير سريع في سعر ${item.json.metal === 'gold' ? 'الذهب' : 'الفضة'}: ${changePercent > 0 ? '+' : ''}${changePercent.toFixed(2)}%`,\n      current_price: currentPrice,\n      previous_price: previousPrice,\n      change_percent: changePercent,\n      timestamp: new Date().toISOString()\n    });\n  }\n}\n\nreturn alerts.map(alert => ({ json: alert }));"
+      },
+      "name": "Detect Rapid Changes",
+      "type": "n8n-nodes-base.code",
+      "position": [1450, 550],
+      "id": "detect-changes"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM detect_seasonal_patterns()"
+      },
+      "name": "Run Seasonal Detection",
+      "type": "n8n-nodes-base.supabase",
+      "position": [1450, 700],
+      "credentials": {
+        "supabaseApi": {
+          "id": "1",
+          "name": "Supabase Account"
+        }
+      },
+      "id": "seasonal-detection",
+      "notes": "يكتشف الأنماط الموسمية تلقائياً من البيانات التاريخية"
+    },
+    {
+      "parameters": {
+        "jsCode": "// معالجة نتائج الكشف التلقائي عن الأنماط الموسمية\nconst patterns = $input.all();\nconst notifications = [];\n\nfor (const pattern of patterns) {\n  const p = pattern.json;\n  \n  // إذا كانت الثقة عالية (>70%) والتغير ملحوظ\n  if (p.confidence >= 70 && Math.abs(p.avg_change) > 2) {\n    const monthNames = [\n      '', 'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',\n      'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'\n    ];\n    \n    const direction = p.avg_change > 0 ? 'ارتفاع' : 'انخفاض';\n    const monthName = monthNames[p.month];\n    \n    notifications.push({\n      type: 'seasonal_pattern',\n      metal: p.metal,\n      title: `نمط موسمي مكتشف: ${monthName}`,\n      message: `تم اكتشاف نمط ${direction} في شهر ${monthName} بمعدل ${Math.abs(p.avg_change).toFixed(1)}%`,\n      confidence: p.confidence,\n      avg_change: p.avg_change,\n      occurrences: p.occurrence_count,\n      calendar_type: p.calendar_type\n    });\n  }\n}\n\nreturn notifications.map(n => ({ json: n }));"
+      },
+      "name": "Process Seasonal Patterns",
+      "type": "n8n-nodes-base.code",
+      "position": [1650, 700],
+      "id": "process-patterns"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "ai_insights",
+        "columns": "insight_type,metal,title,content,confidence_score",
+        "options": {}
+      },
+      "name": "Save Insights to DB",
+      "type": "n8n-nodes-base.supabase",
+      "position": [1850, 650],
+      "credentials": {
+        "supabaseApi": {
+          "id": "1",
+          "name": "Supabase Account"
+        }
+      },
+      "id": "save-insights"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.telegram_chat_id}}",
+        "text": "🔔 *{{$json.title}}*\\n\\n{{$json.message}}\\n\\n📊 مستوى الثقة: {{$json.confidence}}%\\n⏰ {{$json.timestamp}}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "Send Telegram Notification",
+      "type": "n8n-nodes-base.telegram",
+      "position": [1850, 550],
+      "credentials": {
+        "telegramApi": {
+          "id": "2",
+          "name": "Telegram Bot"
+        }
+      },
+      "id": "telegram-notify"
+    }
+  ],
+  "connections": {
+    "Schedule - Every 8 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Gold Price (Global)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Silver Price (Global)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Gold Price (Global)": {
+      "main": [
+        [
+          {
+            "node": "Check Fetch Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Silver Price (Global)": {
+      "main": [
+        [
+          {
+            "node": "Check Fetch Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Fetch Status": {
+      "main": [
+        [
+          {
+            "node": "If All Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If All Failed": {
+      "main": [
+        [
+          {
+            "node": "Log Failure to DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Failure Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Convert to Hijri & Calculate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Failure Alert": {
+      "main": [
+        [
+          {
+            "node": "Wait 1 Hour",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 1 Hour": {
+      "main": [
+        [
+          {
+            "node": "Fetch Gold Price (Global)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Silver Price (Global)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to Hijri & Calculate": {
+      "main": [
+        [
+          {
+            "node": "Save to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Supabase": {
+      "main": [
+        [
+          {
+            "node": "Log Success to DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Detect Rapid Changes",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Run Seasonal Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Rapid Changes": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save Insights to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Seasonal Detection": {
+      "main": [
+        [
+          {
+            "node": "Process Seasonal Patterns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Seasonal Patterns": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save Insights to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

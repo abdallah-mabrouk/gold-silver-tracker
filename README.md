@@ -238,16 +238,6 @@ export const DEFAULT_FEE_PERCENTAGE = 7.0 // غيّرها حسب السوق
 4. Push للفرع (`git push origin feature/amazing-feature`)
 5. افتح Pull Request
 
-## 📝 الترخيص
-
-هذا المشروع مرخص تحت [MIT License](LICENSE)
-
-## 📞 الدعم والتواصل
-
-- 🌐 الموقع: [your-domain.vercel.app](https://your-domain.vercel.app)
-- 📧 البريد: your-email@example.com
-- 💬 Telegram: [@your_username](https://t.me/your_username)
-
 ## 🙏 شكر وتقدير
 
 - [GoldAPI.io](https://goldapi.io) - API الأسعار
